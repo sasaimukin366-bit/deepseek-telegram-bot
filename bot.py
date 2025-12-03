@@ -1,31 +1,68 @@
 #!/usr/bin/env python3
 """
-Telegram бот с DeepSeek через OpenRouter (бесплатно!)
+Telegram бот с OpenRouter (только requests, без openai библиотеки)
 """
 
 import os
-from openai import OpenAI
+import json
 from flask import Flask, request, jsonify
 import logging
 import requests
 
 app = Flask(__name__)
 
-# === КОНФИГУРАЦИЯ OPENROUTER ===
+# === КОНФИГУРАЦИЯ ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-
-# Настройка OpenRouter клиента
-client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1"
-)
-
-# Модель (бесплатная)
 MODEL = "deepseek/deepseek-r1:free"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def ask_openrouter(prompt):
+    """Запрос к OpenRouter API через requests"""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://render.com",  # Для OpenRouter
+        "X-Title": "Telegram Bot"
+    }
+    
+    data = {
+        "model": MODEL,
+        "messages": [
+            {
+                "role": "system", 
+                "content": "Ты полезный ассистент. Отвечай на русском языке. Будь кратким и информативным."
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ],
+        "max_tokens": 500,
+        "temperature": 0.7
+    }
+    
+    try:
+        logger.info(f"🔄 Отправляю запрос к OpenRouter: {prompt[:50]}...")
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        
+        logger.info(f"📥 Ответ OpenRouter: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result['choices'][0]['message']['content']
+        else:
+            logger.error(f"❌ Ошибка OpenRouter: {response.status_code}")
+            logger.error(f"Ответ: {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Исключение при запросе: {e}")
+        return None
 
 def send_message(chat_id, text):
     """Отправка сообщения в Telegram"""
@@ -34,24 +71,30 @@ def send_message(chat_id, text):
     
     try:
         response = requests.post(url, json=data, timeout=10)
-        return response.status_code == 200
+        if response.status_code == 200:
+            logger.info(f"✅ Сообщение отправлено в {chat_id}")
+            return True
+        else:
+            logger.error(f"❌ Ошибка Telegram: {response.status_code}")
+            return False
     except Exception as e:
-        logger.error(f"Ошибка отправки: {e}")
+        logger.error(f"❌ Ошибка отправки: {e}")
         return False
 
 @app.route('/')
 def home():
     return """
-    <h1>🤖 Бот с DeepSeek R1 (OpenRouter)</h1>
-    <p>Бесплатный доступ через OpenRouter!</p>
+    <h1>🤖 Telegram Bot с OpenRouter</h1>
+    <p>Использует DeepSeek R1 через OpenRouter</p>
     <p><a href="/test">Тест работы</a></p>
+    <p>Чтобы активировать бота, напишите ему в Telegram</p>
     """
 
 @app.route('/set_webhook')
 def set_webhook():
     """Установка webhook"""
     try:
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://your-app.onrender.com")
+        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://deepseek-telegram-bot-c2rd.onrender.com")
         webhook_url = f"{render_url}/webhook"
         
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
@@ -59,93 +102,100 @@ def set_webhook():
         
         response = requests.post(url, json=data, timeout=10)
         
-        return f"""
-        <h1>Webhook установлен</h1>
-        <p>Статус: {response.status_code}</p>
-        <p>Ответ: {response.text}</p>
-        """
+        if response.status_code == 200:
+            return f"""
+            <h1>✅ Webhook установлен!</h1>
+            <p>URL: {webhook_url}</p>
+            <p>Теперь напишите боту в Telegram</p>
+            """
+        else:
+            return f"""
+            <h1>❌ Ошибка {response.status_code}</h1>
+            <p>Ответ: {response.text}</p>
+            """
     except Exception as e:
-        return f"<h1>Ошибка: {e}</h1>"
+        return f"<h1>❌ Ошибка: {e}</h1>"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработчик сообщений"""
+    """Обработчик сообщений от Telegram"""
     data = request.json
     
     if not data:
         return jsonify({"error": "No data"}), 400
     
-    logger.info(f"📩 Получен запрос")
+    logger.info(f"📩 Получен webhook запрос")
     
     if 'message' in data:
         message = data['message']
         chat_id = message['chat']['id']
         text = message.get('text', '')
-        user_name = message['from'].get('first_name', 'друг')
+        user_name = message['from'].get('first_name', 'Пользователь')
         
-        logger.info(f"👤 {user_name}: {text}")
+        logger.info(f"👤 {user_name} ({chat_id}): {text}")
         
         # Команда /start
         if text == '/start':
-            send_message(chat_id, f"🤖 Привет, {user_name}!\nЯ бот с DeepSeek R1 (бесплатно через OpenRouter).\nНапиши мне что-нибудь!")
+            send_message(chat_id, f"🤖 Привет, {user_name}!\nЯ бот с DeepSeek AI через OpenRouter.\nПросто напиши мне сообщение!")
         
-        # Любое сообщение
+        # Команда /help
+        elif text == '/help':
+            send_message(chat_id, "📚 Помощь:\nПросто напиши сообщение - я отвечу с помощью AI!")
+        
+        # Любое другое сообщение
         elif text.strip():
-            try:
-                # Запрос через OpenRouter
-                response = client.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {
-                            "role": "system", 
-                            "content": "Ты полезный ассистент. Отвечай на русском языке. Будь дружелюбным."
-                        },
-                        {
-                            "role": "user",
-                            "content": text
-                        }
-                    ],
-                    max_tokens=500,
-                    temperature=0.7
-                )
-                
-                answer = response.choices[0].message.content
+            # Отправляем статус "печатает"
+            typing_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction"
+            requests.post(typing_url, json={"chat_id": chat_id, "action": "typing"}, timeout=5)
+            
+            # Получаем ответ от AI
+            answer = ask_openrouter(text)
+            
+            if answer:
                 send_message(chat_id, answer)
-                logger.info(f"✅ Ответ отправлен")
-                
-            except Exception as e:
-                logger.error(f"❌ Ошибка OpenRouter: {e}")
-                send_message(chat_id, "⚠️ Ошибка обработки. Попробуйте позже.")
+                logger.info(f"✅ Ответ отправлен пользователю {user_name}")
+            else:
+                send_message(chat_id, "⚠️ Не удалось получить ответ. Попробуйте позже.")
+                logger.error(f"❌ Не удалось получить ответ для: {text}")
     
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "message": "processed"})
 
 @app.route('/test')
 def test():
-    """Тест работы OpenRouter"""
-    try:
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "user", "content": "Привет! Ответь коротко."}
-            ],
-            max_tokens=50
-        )
-        answer = response.choices[0].message.content
-        
+    """Тестовая страница"""
+    test_prompt = "Привет! Как дела?"
+    answer = ask_openrouter(test_prompt)
+    
+    if answer:
         return jsonify({
             "status": "✅ OpenRouter работает!",
             "model": MODEL,
-            "response": answer,
-            "provider": "OpenRouter (free)"
+            "response": answer[:200],
+            "length": len(answer)
         })
-    except Exception as e:
+    else:
         return jsonify({
-            "status": "❌ Ошибка OpenRouter",
-            "error": str(e)
+            "status": "❌ OpenRouter не отвечает",
+            "model": MODEL,
+            "error": "Проверьте API ключ и подключение"
         })
+
+@app.route('/health')
+def health():
+    """Health check для Render"""
+    return jsonify({
+        "status": "healthy",
+        "service": "telegram-openrouter-bot",
+        "model": MODEL
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
-    logger.info(f"🚀 Запуск бота с OpenRouter")
+    logger.info("=" * 50)
+    logger.info("🚀 ЗАПУСК БОТА С OPENROUTER")
+    logger.info(f"🌐 URL: https://deepseek-telegram-bot-c2rd.onrender.com")
     logger.info(f"🧠 Модель: {MODEL}")
+    logger.info(f"🔑 API ключ: {'установлен' if OPENROUTER_API_KEY else 'НЕ УСТАНОВЛЕН'}")
+    logger.info("=" * 50)
+    
     app.run(host='0.0.0.0', port=port, debug=False)
