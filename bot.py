@@ -14,7 +14,7 @@ app = Flask(__name__)
 # === КОНФИГУРАЦИЯ ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-MODEL = "deepseek/deepseek-r1:free"
+MODEL = "deepseek/deepseek-r1-0528"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
