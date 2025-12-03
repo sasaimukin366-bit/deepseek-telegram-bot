@@ -14,7 +14,7 @@ app = Flask(__name__)
 # === КОНФИГУРАЦИЯ ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-MODEL = "google/gemini-3-pro-image-preview"
+MODEL = "openai/gpt-5.1-codex-mini"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
