@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Telegram бот с OpenRouter (только requests, без openai библиотеки)
+Telegram бот с поддержкой фото через OpenRouter
 """
 
 import os
 import json
+import base64
 from flask import Flask, request, jsonify
 import logging
 import requests
@@ -14,188 +15,232 @@ app = Flask(__name__)
 # === КОНФИГУРАЦИЯ ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-MODEL = "openai/gpt-5.1-codex-mini"
+MODEL = "openai/gpt-5.1-codex-mini"  # Модель которая понимает картинки
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def ask_openrouter(prompt):
-    """Запрос к OpenRouter API через requests"""
+def get_file_from_telegram(file_id):
+    """Получить файл от Telegram"""
+    # 1. Получаем информацию о файле
+    file_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getFile"
+    file_info = requests.post(file_url, json={"file_id": file_id}).json()
+    
+    if not file_info.get('ok'):
+        return None
+    
+    file_path = file_info['result']['file_path']
+    
+    # 2. Скачиваем файл
+    download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+    response = requests.get(download_url)
+    
+    if response.status_code == 200:
+        return response.content
+    return None
+
+def ask_openrouter_with_image(prompt, image_bytes=None, image_url=None):
+    """Запрос к OpenRouter с изображением"""
     url = "https://openrouter.ai/api/v1/chat/completions"
     
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://render.com",  # Для OpenRouter
-        "X-Title": "Telegram Bot"
+        "Content-Type": "application/json"
     }
+    
+    # Формируем сообщения
+    messages = [
+        {
+            "role": "system", 
+            "content": "Ты полезный ассистент. Отвечай на русском языке."
+        }
+    ]
+    
+    # Если есть изображение
+    if image_bytes:
+        # Конвертируем в base64
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": prompt if prompt else "Что на этом изображении?"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}"
+                    }
+                }
+            ]
+        })
+    elif image_url:
+        messages.append({
+            "role": "user",
+            "content": [
+                {
+                    "type": "text", 
+                    "text": prompt if prompt else "Что на этом изображении?"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_url
+                    }
+                }
+            ]
+        })
+    else:
+        # Только текст
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
     
     data = {
         "model": MODEL,
-        "messages": [
-            {
-                "role": "system", 
-                "content": "Ты полезный ассистент. Отвечай на русском языке. Будь кратким и информативным."
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "max_tokens": 500,
-        "temperature": 0.7
+        "messages": messages,
+        "max_tokens": 500
     }
     
     try:
-        logger.info(f"🔄 Отправляю запрос к OpenRouter: {prompt[:50]}...")
-        response = requests.post(url, headers=headers, json=data, timeout=30)
-        
-        logger.info(f"📥 Ответ OpenRouter: {response.status_code}")
+        response = requests.post(url, headers=headers, json=data, timeout=60)
         
         if response.status_code == 200:
             result = response.json()
             return result['choices'][0]['message']['content']
         else:
-            logger.error(f"❌ Ошибка OpenRouter: {response.status_code}")
-            logger.error(f"Ответ: {response.text}")
+            logger.error(f"OpenRouter error: {response.status_code} - {response.text}")
             return None
             
     except Exception as e:
-        logger.error(f"❌ Исключение при запросе: {e}")
+        logger.error(f"Request error: {e}")
         return None
 
 def send_message(chat_id, text):
-    """Отправка сообщения в Telegram"""
+    """Отправка сообщения"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     data = {"chat_id": chat_id, "text": text}
     
     try:
         response = requests.post(url, json=data, timeout=10)
-        if response.status_code == 200:
-            logger.info(f"✅ Сообщение отправлено в {chat_id}")
-            return True
-        else:
-            logger.error(f"❌ Ошибка Telegram: {response.status_code}")
-            return False
+        return response.status_code == 200
     except Exception as e:
-        logger.error(f"❌ Ошибка отправки: {e}")
+        logger.error(f"Send error: {e}")
         return False
+
+def send_chat_action(chat_id, action="typing"):
+    """Отправка действия (typing, upload_photo)"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction"
+    data = {"chat_id": chat_id, "action": action}
+    
+    try:
+        requests.post(url, json=data, timeout=5)
+    except:
+        pass
 
 @app.route('/')
 def home():
     return """
-    <h1>🤖 Telegram Bot с OpenRouter</h1>
-    <p>Использует DeepSeek R1 через OpenRouter</p>
-    <p><a href="/test">Тест работы</a></p>
-    <p>Чтобы активировать бота, напишите ему в Telegram</p>
+    <h1>🤖 Бот с поддержкой фото</h1>
+    <p>Можно отправлять фото и текст!</p>
+    <p>Модель: openai/gpt-4o-mini</p>
     """
-
-@app.route('/set_webhook')
-def set_webhook():
-    """Установка webhook"""
-    try:
-        render_url = os.environ.get("RENDER_EXTERNAL_URL", "https://deepseek-telegram-bot-c2rd.onrender.com")
-        webhook_url = f"{render_url}/webhook"
-        
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-        data = {"url": webhook_url}
-        
-        response = requests.post(url, json=data, timeout=10)
-        
-        if response.status_code == 200:
-            return f"""
-            <h1>✅ Webhook установлен!</h1>
-            <p>URL: {webhook_url}</p>
-            <p>Теперь напишите боту в Telegram</p>
-            """
-        else:
-            return f"""
-            <h1>❌ Ошибка {response.status_code}</h1>
-            <p>Ответ: {response.text}</p>
-            """
-    except Exception as e:
-        return f"<h1>❌ Ошибка: {e}</h1>"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Обработчик сообщений от Telegram"""
+    """Обработчик сообщений с фото"""
     data = request.json
     
     if not data:
         return jsonify({"error": "No data"}), 400
     
-    logger.info(f"📩 Получен webhook запрос")
-    
     if 'message' in data:
         message = data['message']
         chat_id = message['chat']['id']
         text = message.get('text', '')
-        user_name = message['from'].get('first_name', 'Пользователь')
-        
-        logger.info(f"👤 {user_name} ({chat_id}): {text}")
         
         # Команда /start
         if text == '/start':
-            send_message(chat_id, f"🤖 Привет, {user_name}!\nЯ бот с DeepSeek AI через OpenRouter.\nПросто напиши мне сообщение!")
+            name = message['from'].get('first_name', 'друг')
+            send_message(chat_id, 
+                f"🤖 Привет, {name}!\n"
+                f"Я бот с AI который понимает фото!\n"
+                f"Отправь мне фото с подписью или без.")
         
         # Команда /help
         elif text == '/help':
-            send_message(chat_id, "📚 Помощь:\nПросто напиши сообщение - я отвечу с помощью AI!")
+            send_message(chat_id,
+                "📸 **Что умеет бот:**\n"
+                "1. Отправь фото - опишу что на нём\n"
+                "2. Отправь фото с текстом - отвечу по контексту\n"
+                "3. Просто текст - обычный ответ\n\n"
+                "Примеры:\n"
+                "• Фото еды → 'Это пицца с грибами'\n"
+                "• Фото + 'Что это?' → описание\n"
+                "• 'Привет' → 'Привет!'")
         
-        # Любое другое сообщение
+        # Если есть фото
+        elif 'photo' in message:
+            send_chat_action(chat_id, "typing")
+            
+            # Берем самое большое фото
+            photos = message['photo']
+            largest_photo = photos[-1]  # Последнее - самое большое
+            file_id = largest_photo['file_id']
+            
+            caption = message.get('caption', '')
+            
+            # Скачиваем фото
+            send_message(chat_id, "🖼️ Получаю фото...")
+            image_data = get_file_from_telegram(file_id)
+            
+            if image_data:
+                send_message(chat_id, "🤔 Анализирую изображение...")
+                
+                # Запрос к AI с фото
+                prompt = caption if caption else "Что на этом изображении? Опиши подробно."
+                answer = ask_openrouter_with_image(prompt, image_bytes=image_data)
+                
+                if answer:
+                    send_message(chat_id, answer)
+                else:
+                    send_message(chat_id, "⚠️ Не удалось проанализировать фото.")
+            else:
+                send_message(chat_id, "❌ Не удалось загрузить фото.")
+        
+        # Только текст
         elif text.strip():
-            # Отправляем статус "печатает"
-            typing_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendChatAction"
-            requests.post(typing_url, json={"chat_id": chat_id, "action": "typing"}, timeout=5)
+            send_chat_action(chat_id, "typing")
             
-            # Получаем ответ от AI
-            answer = ask_openrouter(text)
-            
+            answer = ask_openrouter_with_image(text)
             if answer:
                 send_message(chat_id, answer)
-                logger.info(f"✅ Ответ отправлен пользователю {user_name}")
             else:
-                send_message(chat_id, "⚠️ Не удалось получить ответ. Попробуйте позже.")
-                logger.error(f"❌ Не удалось получить ответ для: {text}")
+                send_message(chat_id, "⚠️ Ошибка. Попробуйте позже.")
     
-    return jsonify({"status": "ok", "message": "processed"})
+    return jsonify({"status": "ok"})
 
 @app.route('/test')
 def test():
-    """Тестовая страница"""
-    test_prompt = "Привет! Как дела?"
-    answer = ask_openrouter(test_prompt)
-    
+    """Тест работы"""
+    answer = ask_openrouter_with_image("Привет! Работает?")
     if answer:
         return jsonify({
-            "status": "✅ OpenRouter работает!",
+            "status": "✅ Работает",
             "model": MODEL,
-            "response": answer[:200],
-            "length": len(answer)
+            "capabilities": "text + images"
         })
     else:
         return jsonify({
-            "status": "❌ OpenRouter не отвечает",
-            "model": MODEL,
-            "error": "Проверьте API ключ и подключение"
+            "status": "❌ Ошибка",
+            "model": MODEL
         })
-
-@app.route('/health')
-def health():
-    """Health check для Render"""
-    return jsonify({
-        "status": "healthy",
-        "service": "telegram-openrouter-bot",
-        "model": MODEL
-    })
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
-    logger.info("=" * 50)
-    logger.info("🚀 ЗАПУСК БОТА С OPENROUTER")
-    logger.info(f"🌐 URL: https://deepseek-telegram-bot-c2rd.onrender.com")
+    logger.info(f"🚀 Запуск бота с поддержкой фото")
     logger.info(f"🧠 Модель: {MODEL}")
-    logger.info(f"🔑 API ключ: {'установлен' if OPENROUTER_API_KEY else 'НЕ УСТАНОВЛЕН'}")
-    logger.info("=" * 50)
-    
     app.run(host='0.0.0.0', port=port, debug=False)
