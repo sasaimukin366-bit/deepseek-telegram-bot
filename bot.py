@@ -19,7 +19,7 @@ app = Flask(__name__)
 # === КОНФИГУРАЦИЯ ===
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-MODEL = "google/gemini-2.5-flash-image"  # Модель которая понимает картинки
+MODEL = "openai/gpt-5.1-codex-mini"  # Модель которая понимает картинки
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
